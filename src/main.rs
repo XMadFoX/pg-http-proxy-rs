@@ -16,12 +16,12 @@ struct ProxyRequest {
 
 #[derive(Debug, Serialize)]
 struct Rows2d {
-    rows: Vec<Vec<String>>,
+    rows: Vec<Vec<Value>>,
 }
 
 #[derive(Debug, Serialize)]
 struct Row1d {
-    rows: Vec<String>,
+    rows: Vec<Value>,
 }
 
 async fn execute_handler(db: web::Data<PgPool>, body: web::Json<ProxyRequest>) -> impl Responder {
@@ -79,13 +79,13 @@ async fn execute_handler(db: web::Data<PgPool>, body: web::Json<ProxyRequest>) -
     match req.method.as_str() {
         "get" => match q.fetch_one(db.get_ref()).await {
             Ok(row) => {
-                let mut out = Vec::with_capacity(row.len());
+                let mut out: Vec<Value> = Vec::with_capacity(row.len());
                 for (i, _) in row.columns().iter().enumerate() {
-                    match row_to_string(&row, i) {
-                        Ok(s) => out.push(s),
+                    match row_to_value(&row, i) {
+                        Ok(v) => out.push(v),
                         Err(e) => {
                             warn!("column conversion error: {:?}", e);
-                            out.push("<<conversion error>>".to_string());
+                            out.push(Value::String("<<conversion error>>".to_string()));
                         }
                     }
                 }
@@ -95,15 +95,15 @@ async fn execute_handler(db: web::Data<PgPool>, body: web::Json<ProxyRequest>) -
         },
         "all" | "values" => match q.fetch_all(db.get_ref()).await {
             Ok(rows) => {
-                let mut out: Vec<Vec<String>> = Vec::with_capacity(rows.len());
+                let mut out: Vec<Vec<Value>> = Vec::with_capacity(rows.len());
                 for row in rows {
-                    let mut r: Vec<String> = Vec::with_capacity(row.len());
+                    let mut r: Vec<Value> = Vec::with_capacity(row.len());
                     for (i, _) in row.columns().iter().enumerate() {
-                        match row_to_string(&row, i) {
-                            Ok(s) => r.push(s),
+                        match row_to_value(&row, i) {
+                            Ok(v) => r.push(v),
                             Err(e) => {
                                 warn!("column conversion error: {:?}", e);
-                                r.push("<<conversion error>>".to_string());
+                                r.push(Value::String("<<conversion error>>".to_string()));
                             }
                         }
                     }
@@ -124,81 +124,58 @@ async fn execute_handler(db: web::Data<PgPool>, body: web::Json<ProxyRequest>) -
     }
 }
 
-/// Try a few typed getters to produce a String for any column.
-/// This is not exhaustive but handles common scalar types.
-/// For production, you'd expand types or use a generic value extractor.
-fn row_to_string(row: &sqlx::postgres::PgRow, idx: usize) -> Result<String, sqlx::Error> {
-    // 1. Try DateTime<Utc> (timestamp with time zone)
-    if let Ok(v) = row.try_get::<Option<DateTime<Utc>>, usize>(idx) {
-        return Ok(match v {
-            Some(val) => val.to_string(),
-            None => "null".to_string(),
-        });
+/// Try a few typed getters to produce a serde_json::Value for any column.
+/// This is not exhaustive but handles common scalar types and ensures correct JSON serialization.
+fn row_to_value(row: &sqlx::postgres::PgRow, idx: usize) -> Result<Value, sqlx::Error> {
+    // Helper macro to handle Option<T> and return Value::Null for None
+    macro_rules! try_get_value {
+        ($type:ty, $conversion:expr) => {
+            if let Ok(v) = row.try_get::<Option<$type>, usize>(idx) {
+                return Ok(match v {
+                    Some(val) => $conversion(val),
+                    None => Value::Null,
+                });
+            }
+        };
     }
 
-    // 2. Try NaiveDateTime (timestamp without time zone)
-    if let Ok(v) = row.try_get::<Option<NaiveDateTime>, usize>(idx) {
-        return Ok(match v {
-            Some(val) => val.to_string(),
-            None => "null".to_string(),
-        });
-    }
+    // 1. Try DateTime<Utc> (timestamp with time zone) - serialized as string
+    try_get_value!(DateTime<Utc>, |val: DateTime<Utc>| Value::String(
+        val.to_string()
+    ));
+
+    // 2. Try NaiveDateTime (timestamp without time zone) - serialized as string
+    try_get_value!(NaiveDateTime, |val: NaiveDateTime| Value::String(
+        val.to_string()
+    ));
 
     // 3. Try String/Text types
-    if let Ok(v) = row.try_get::<Option<String>, usize>(idx) {
-        return Ok(match v {
-            Some(val) => val,
-            None => "null".to_string(),
-        });
-    }
+    try_get_value!(String, Value::String);
 
-    // 4. Try i64
-    if let Ok(v) = row.try_get::<Option<i64>, usize>(idx) {
-        return Ok(match v {
-            Some(val) => val.to_string(),
-            None => "null".to_string(),
-        });
-    }
+    // 4. Try i64 (Numbers)
+    try_get_value!(i64, |val: i64| Value::Number(val.into()));
 
-    // 5. Try i32
-    if let Ok(v) = row.try_get::<Option<i32>, usize>(idx) {
-        return Ok(match v {
-            Some(val) => val.to_string(),
-            None => "null".to_string(),
-        });
-    }
+    // 5. Try i32 (Numbers)
+    try_get_value!(i32, |val: i32| Value::Number(val.into()));
 
-    // 6. Try f64
-    if let Ok(v) = row.try_get::<Option<f64>, usize>(idx) {
-        return Ok(match v {
-            Some(val) => val.to_string(),
-            None => "null".to_string(),
-        });
-    }
+    // 6. Try f64 (Numbers)
+    try_get_value!(f64, |val: f64| Value::Number(
+        serde_json::Number::from_f64(val).unwrap_or(serde_json::Number::from(0))
+    ));
 
-    // 7. Try bool
-    if let Ok(v) = row.try_get::<Option<bool>, usize>(idx) {
-        return Ok(match v {
-            Some(val) => val.to_string(),
-            None => "null".to_string(),
-        });
-    }
+    // 7. Try bool (Boolean)
+    try_get_value!(bool, Value::Bool);
 
     // 8. Try JSON value (for json/jsonb)
-    if let Ok(v) = row.try_get::<Option<serde_json::Value>, usize>(idx) {
-        return Ok(match v {
-            Some(val) => val.to_string(),
-            None => "null".to_string(),
-        });
-    }
+    try_get_value!(Value, |val: Value| val);
 
-    // As a last resort, attempt to get as bytes and debug print
+    // As a last resort, attempt to get as bytes and debug print (serialized as string)
     if let Ok(bytes) = row.try_get::<Vec<u8>, usize>(idx) {
-        return Ok(format!("{:?}", bytes));
+        return Ok(Value::String(format!("{:?}", bytes)));
     }
 
-    // If nothing worked, return "null" as a final fallback.
-    Ok("null".to_string())
+    // If nothing worked, return Null
+    Ok(Value::Null)
 }
 
 #[actix_web::main]
