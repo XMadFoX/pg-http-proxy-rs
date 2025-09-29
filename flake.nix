@@ -1,32 +1,55 @@
-
 {
-  description = "Dev env";
+  description = "Dev env + docker image";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
+    flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { nixpkgs, ... }: let
-    system = builtins.currentSystem;
-
-    in {
-      devShells."${system}".default = let
-        pkgs = import nixpkgs {
-          inherit system;
+  outputs =
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+      ...
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
+      let
+        pkgs = import nixpkgs { inherit system; };
+        rustPkgs = pkgs.rustPlatform;
+        finalPackage = self.packages.${system}.pgHttpProxy;
+      in
+      {
+        devShells.default = pkgs.mkShell {
+          packages = with pkgs; [
+            cargo
+            rustc
+            rustfmt
+            openssl
+            pkg-config
+            clippy
+          ];
+          RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
         };
 
-      in pkgs.mkShell {
-        packages = with pkgs; [
-          # superior
-          cargo
-          rustc
-          rustfmt
-          openssl
-          pkg-config
-          clippy
-        ];
+        packages.pgHttpProxy = rustPkgs.buildRustPackage rec {
+          cargoBuildFlags = [ "" ];
+          pname = "pg-http-proxy";
+          version = "0.1.0";
+          src = ./.;
 
-        RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
+          cargoLock.lockFile = ./Cargo.lock;
+
+          buildInputs = [
+            pkgs.openssl
+            pkgs.pkg-config
+          ];
+          PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
+          OPENSSL_DIR = pkgs.lib.getDev pkgs.openssl;
+          OPENSSL_LIBS_DIR = pkgs.lib.getLib pkgs.openssl;
+          OPENSSL_NO_VENDOR = 1;
+          OPENSSL_LIB_DIR = "${pkgs.lib.getLib pkgs.openssl}/lib";
         };
     };
 }
