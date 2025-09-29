@@ -51,5 +51,33 @@
           OPENSSL_NO_VENDOR = 1;
           OPENSSL_LIB_DIR = "${pkgs.lib.getLib pkgs.openssl}/lib";
         };
-    };
+
+        # Docker image output
+        dockerImage =
+          let
+            finalPackage = self.packages.${system}.pgHttpProxy;
+          in
+          pkgs.dockerTools.buildImage {
+            name = "pg-http-proxy-rs";
+            tag = "latest";
+
+            # Copy the built binary into the image
+            copyToRoot = [
+              self.packages.${system}.pgHttpProxy
+            ];
+
+            config = {
+              # Entrypoint (or Cmd) pointing to your binary
+              Entrypoint = [ "${finalPackage}/bin/pg-http-proxy" ];
+              ExposedPorts = {
+                "8080/tcp" = { };
+              };
+              # Working directory, environment, etc can go here
+            };
+
+            # TODO: build on more minimal base image
+            # baseImage = someBaseImage;
+          };
+      }
+    );
 }
