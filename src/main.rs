@@ -1,10 +1,74 @@
+use actix_web::{dev::Payload, Error, FromRequest, HttpRequest};
 use actix_web::{middleware::Logger, web, App, HttpResponse, HttpServer, Responder};
 use chrono::{DateTime, NaiveDateTime, Utc};
+use futures::future::{ready, Ready};
 use log::warn;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::{PgPool, Row};
+use std::collections::HashSet;
 use std::env;
+
+use once_cell::sync::Lazy;
+
+// Global set of valid tokens, initialized once from AUTH_TOKENS env var.
+static VALID_TOKENS: Lazy<HashSet<String>> = Lazy::new(|| {
+    let tokens_str = env::var("AUTH_TOKENS").unwrap_or_else(|_| {
+        log::warn!("AUTH_TOKENS environment variable not set. Authentication will be disabled.");
+        "".to_string()
+    });
+
+    tokens_str
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+});
+
+// --- Bearer Token Authentication Request Guard ---
+
+pub struct BearerAuth;
+
+impl FromRequest for BearerAuth {
+    type Error = Error;
+    type Future = Ready<Result<Self, Self::Error>>;
+
+    fn from_request(req: &HttpRequest, _payload: &mut Payload) -> Self::Future {
+        let auth_header = req.headers().get("Authorization");
+
+        let result = match auth_header {
+            Some(header_value) => {
+                if let Ok(header_str) = header_value.to_str() {
+                    if header_str.starts_with("Bearer ") {
+                        let token = &header_str[7..];
+                        if VALID_TOKENS.contains(token) {
+                            Ok(BearerAuth)
+                        } else {
+                            log::debug!("Invalid Bearer token provided.");
+                            Err(actix_web::error::ErrorUnauthorized("Invalid token"))
+                        }
+                    } else {
+                        log::debug!("Authorization header present but not Bearer scheme.");
+                        Err(actix_web::error::ErrorUnauthorized(
+                            "Invalid authorization scheme",
+                        ))
+                    }
+                } else {
+                    log::debug!("Authorization header contains non-string data.");
+                    Err(actix_web::error::ErrorBadRequest("Invalid header encoding"))
+                }
+            }
+            None => {
+                log::debug!("Authorization header missing.");
+                Err(actix_web::error::ErrorUnauthorized(
+                    "Authorization header missing",
+                ))
+            }
+        };
+
+        ready(result)
+    }
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -24,7 +88,11 @@ struct Row1d {
     rows: Vec<Value>,
 }
 
-async fn execute_handler(db: web::Data<PgPool>, body: web::Json<ProxyRequest>) -> impl Responder {
+async fn execute_handler(
+    _auth: BearerAuth,
+    db: web::Data<PgPool>,
+    body: web::Json<ProxyRequest>,
+) -> impl Responder {
     let req = body.into_inner();
 
     // Basic safety guard: disallow empty SQL.
