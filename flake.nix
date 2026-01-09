@@ -25,7 +25,7 @@
           pgHttpProxy = rustPkgs.buildRustPackage rec {
             cargoBuildFlags = [ "" ];
             pname = "pg-http-proxy";
-            version = "0.1.0";
+            version = "0.1.3";
             src = ./.;
 
             cargoLock.lockFile = ./Cargo.lock;
@@ -44,16 +44,27 @@
         rec {
           inherit pgHttpProxy;
           dockerImage = pkgs.dockerTools.buildImage {
-            name = "pg-http-proxy-rs";
-            tag = "latest";
+            name = "xmadfox/pg-http-proxy-rs";
+            tag = pgHttpProxy.version;
 
             copyToRoot = [ pgHttpProxy ];
+
+            runAsRoot = ''
+              #!${pkgs.runtimeShell}
+              ${pkgs.dockerTools.shadowSetup}
+              groupadd -r nonroot
+              useradd -r -g nonroot nonroot
+              mkdir -p /home/nonroot
+              chown nonroot:nonroot /home/nonroot
+            '';
 
             config = {
               Entrypoint = [ "${pgHttpProxy}/bin/pg-http-proxy" ];
               ExposedPorts = {
                 "8080/tcp" = { };
               };
+              User = "nonroot";
+              WorkingDir = "/home/nonroot";
             };
 
             # TODO: build on more minimal base image
