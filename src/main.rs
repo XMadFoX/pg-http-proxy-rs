@@ -11,6 +11,20 @@ use std::env;
 
 use once_cell::sync::Lazy;
 
+struct UntypedString(String);
+
+impl sqlx::Type<sqlx::Postgres> for UntypedString {
+    fn type_info() -> sqlx::postgres::PgTypeInfo {
+        sqlx::postgres::PgTypeInfo::with_oid(sqlx::postgres::types::Oid(0))
+    }
+}
+
+impl<'q> sqlx::Encode<'q, sqlx::Postgres> for UntypedString {
+    fn encode_by_ref(&self, buf: &mut sqlx::postgres::PgArgumentBuffer) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
+        <String as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&self.0, buf)
+    }
+}
+
 // Global set of valid tokens, initialized once from AUTH_TOKENS env var.
 static VALID_TOKENS: Lazy<HashSet<String>> = Lazy::new(|| {
     let tokens_str = env::var("AUTH_TOKENS").unwrap_or_else(|_| {
@@ -123,7 +137,7 @@ async fn execute_handler(
                         q.bind(dt_utc.naive_utc())
                     } else {
                         // Fallback to binding as String (TEXT)
-                        q.bind(s)
+                        q.bind(UntypedString(s))
                     }
                 }
                 serde_json::Value::Number(n) => {
@@ -136,7 +150,7 @@ async fn execute_handler(
                     }
                 }
                 serde_json::Value::Bool(b) => q.bind(b),
-                _ => q.bind(p.to_string()), // Fallback for other types
+                _ => q.bind(UntypedString(p.to_string())), // Fallback for other types
             };
         }
     }
