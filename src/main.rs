@@ -5,7 +5,7 @@ use futures::future::{ready, Ready};
 use log::warn;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sqlx::{PgPool, Row};
+use sqlx::{PgPool, Row, ValueRef};
 use std::collections::HashSet;
 use std::env;
 
@@ -250,6 +250,20 @@ fn row_to_value(row: &sqlx::postgres::PgRow, idx: usize) -> Result<Value, sqlx::
 
     // 8. Try JSON value (for json/jsonb)
     try_get_value!(Value, |val: Value| val);
+
+    // 9. Try to read as raw string (for ENUMs, etc.)
+    if let Ok(raw) = row.try_get_raw(idx) {
+        if !raw.is_null() {
+            if let Ok(bytes) = raw.as_bytes() {
+                if let Ok(s) = std::str::from_utf8(bytes) {
+                    // Check for null bytes to avoid misinterpreting binary data
+                    if !s.contains('\0') {
+                        return Ok(Value::String(s.to_string()));
+                    }
+                }
+            }
+        }
+    }
 
     // As a last resort, attempt to get as bytes and debug print (serialized as string)
     if let Ok(bytes) = row.try_get::<Vec<u8>, usize>(idx) {
