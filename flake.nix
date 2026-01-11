@@ -59,12 +59,19 @@
             pname = manifest.name;
             version = manifest.version;
           });
+
+          archPostfix = {
+            "aarch64-linux" = "-arm64";
+            "x86_64-linux" = "-amd64";
+            "aarch64-darwin" = "-arm64";
+            "x86_64-darwin" = "-amd64";
+          }.${system} or "";
         in
         rec {
           inherit pgHttpProxy;
           dockerImage = pkgs.dockerTools.buildImage {
             name = "xmadfox/pg-http-proxy-rs";
-            tag = pgHttpProxy.version;
+            tag = "${pgHttpProxy.version}${archPostfix}";
 
             copyToRoot = [ pgHttpProxy ];
 
