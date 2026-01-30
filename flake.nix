@@ -69,19 +69,23 @@
         in
         rec {
           inherit pgHttpProxy;
-          dockerImage = pkgs.dockerTools.buildImage {
+          dockerImage = pkgs.dockerTools.buildLayeredImage {
             name = "xmadfox/pg-http-proxy-rs";
             tag = "${pgHttpProxy.version}${archPostfix}";
 
-            copyToRoot = [ pgHttpProxy ];
+            contents = [
+              pgHttpProxy
+              pkgs.cacert # Required for SSL/TLS certificates
+              pkgs.tzdata # Required for timezone data
+            ];
 
-            runAsRoot = ''
-              #!${pkgs.runtimeShell}
-              ${pkgs.dockerTools.shadowSetup}
-              groupadd -r nonroot
-              useradd -r -g nonroot nonroot
-              mkdir -p /home/nonroot
-              chown nonroot:nonroot /home/nonroot
+            # Create nonroot user without requiring runAsRoot
+            fakeRootCommands = ''
+              mkdir -p etc
+              echo "nonroot:x:1000:1000:nonroot:/home/nonroot:/bin/sh" > etc/passwd
+              echo "nonroot:x:1000:" > etc/group
+              mkdir -p home/nonroot
+              chown 1000:1000 home/nonroot
             '';
 
             config = {
